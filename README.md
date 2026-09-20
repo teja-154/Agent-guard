@@ -1,46 +1,62 @@
 # agent-guard
 
-A minimal, stdlib-only circuit breaker for AI agent tool calls. Stops an
-agent that's stuck failing the same (or a reworded) action in a silent,
-token-burning loop.
+**Stops an AI agent from silently looping on a failing action and burning
+your token budget.**
 
-**Not a novel idea** — see [Similar Projects](#similar-projects) below.
-This one's differentiator is size: one file, zero dependencies, no server,
-no framework lock-in.
+One file. Zero dependencies. Not novel — see [Similar projects](#similar-projects).
 
-## The problem
-
-An agent doesn't get a 500 error when it's stuck. It calls `search(q)`,
-gets an empty result, rewords the query, gets another empty result, and
-repeats — burning tokens on calls that all "succeed" individually.
-
-## Install
-
-```bash
-pip install git+https://github.com/teja-154/Agent-guard.git
-```
-
-or just copy `agent_guard.py` into your project — it's one file, stdlib only.
-
-## Usage
-
-### Decorator (closest thing to zero-integration)
+## 30-second example
 
 ```python
 from agent_guard import guarded, GuardTripped
 
 @guarded(threshold=3)
 def search(query: str):
-    ok, result = call_your_api(query)
-    return ok, result          # (success, payload)
+    return call_your_api(query)   # raises, or returns normally — both work
 
 try:
     search("some query")
 except GuardTripped:
-    print("Agent stuck in a loop — stopping.")
+    print("Agent is stuck in a loop — stopping.")
 ```
 
-### Manual (full control)
+That's the whole integration. No config file, no server, no framework to adopt.
+
+## Who this is for
+
+- **Just want it to work:** copy `agent_guard.py` into your project, add
+  `@guarded()` above any function your agent calls repeatedly. Done.
+- **Building an agent:** it catches both failure styles real code actually
+  uses — a function that `raise`s, and one that returns `(success, result)`
+  — so you don't have to restructure your API client to use this.
+- **Reviewing it for correctness:** see [How it works](#how-it-works) below
+  for the exact matching/decay algorithm and its known limitation.
+
+## The problem
+
+An agent doesn't get a clean error when it's stuck. It calls `search(q)`,
+gets an empty result, rewords the query, gets another empty result, and
+repeats — burning tokens on calls that each "succeed" individually.
+
+## Two ways to fail (both are caught)
+
+```python
+# Style 1: your function raises on failure (e.g. requests, most SDKs)
+@guarded(threshold=3)
+def call_api(query):
+    return requests.get(url, params={"q": query}).json()  # raises on error
+
+# Style 2: your function returns (success, result)
+@guarded(threshold=3)
+def call_api(query):
+    ok, data = my_client.search(query)
+    return ok, data
+```
+
+Either way, `@guarded` counts it as a failure and applies the same loop
+detection.
+
+## Manual API (full control)
 
 ```python
 from agent_guard import CircuitBreaker
@@ -62,18 +78,28 @@ elif v.action == "TRIP":
 | `WARN` | Same (or reworded) call failed `threshold` times — injects a hint |
 | `TRIP` | Failed `threshold*2` times — stop the agent |
 
-## How it detects loops
+## How it works
 
 - **Exact repeats**: same tool + same args, hashed.
 - **Fuzzy repeats**: reworded queries to the *same tool* bucket together via
-  Jaccard word-similarity (≥0.75), so "python tutorial" and "tutorial
-  python" count as the same failing action. Never buckets across different
-  tools.
+  Jaccard word-similarity (≥0.75) — "python tutorial" and "tutorial python"
+  count as the same failing action. Never buckets across different tools.
 - **Recovery**: a success removes exactly one failure from its bucket
-  (partial decay) — not a full reset. A mostly-broken API (e.g. 75% failure
+  (partial decay), not a full reset. A mostly-broken API (e.g. 75% failure
   rate) still trips; a genuinely flaky one (~50% success) plateaus instead
   of tripping.
 - **Budget**: optional hard token cap, independent of the loop logic.
+- **Known limitation**: fuzzy similarity is word-overlap based (Jaccard),
+  not semantic — it won't catch a rephrasing with zero shared words
+  (e.g. "find hotels" vs "lodging near me"). It's a cheap heuristic, not NLP.
+
+## Install
+
+```bash
+pip install git+https://github.com/teja-154/Agent-guard.git
+```
+
+or copy `agent_guard.py` directly into your project — it's one file, stdlib only.
 
 ## Testing
 
@@ -81,9 +107,10 @@ elif v.action == "TRIP":
 python test_agent_guard.py
 ```
 
-16 assertions: exact-repeat escalation, fuzzy bucketing, cross-tool
+18 assertions: exact-repeat escalation, fuzzy bucketing, cross-tool
 isolation, decay math on both 25% and 50% success rates, decorator
-behavior, thread safety, and budget enforcement.
+behavior with both tuple-returns and raised exceptions, thread safety,
+and budget enforcement.
 
 `demo_integration.py` runs the guard against real (intentionally failing)
 HTTP requests, not synthetic data, so you can watch it trip on an actual
@@ -91,17 +118,16 @@ network failure.
 
 ## Similar projects
 
-This category is already well-covered. Worth looking at before you build
-on top of this:
+This category is well-covered already. Worth a look before building on top
+of this one:
 
 - [AgentCircuit](https://github.com/simranmultani197/AgentCircuit) — decorator-based, works with LangGraph/LangChain/CrewAI/AutoGen
 - [aura-guard](https://github.com/auraguardhq/aura-guard) — multi-tool sequence loop detection (A→B→A→B patterns)
 - [LoopGuard](https://pkg.go.dev/github.com/loop-eng/loopguard) — daemon that monitors Claude Code/Codex/Gemini CLI sessions live
 - [AgentBreaker](https://pypi.org/project/agentbreaker-sdk/) — orchestration-layer breaker with a dashboard
 
-This project is smaller and has no runtime dependencies, which is the
-tradeoff: less capability, easier to read end-to-end and drop into a
-student project.
+This one is smaller and dependency-free, which is the tradeoff: less
+capability, but you can read the entire thing in five minutes.
 
 ## License
 

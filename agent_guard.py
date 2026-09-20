@@ -5,13 +5,13 @@ Single file, stdlib only, zero deps.
 Detects when an agent is stuck failing the same (or reworded) action
 repeatedly, and trips before it burns budget in a silent loop.
 
-Quick use (decorator):
+Quick use (decorator) -- your function can either raise on failure
+(most real API clients do) or return (success, result):
     from agent_guard import guarded, GuardTripped
 
     @guarded()
     def search(query: str):
-        ok, result = call_api(query)
-        return ok, result   # (success, payload)
+        return call_api(query)   # raises on failure -- caught automatically
 
 Direct use (manual):
     from agent_guard import CircuitBreaker
@@ -143,9 +143,10 @@ class CircuitBreaker:
 def guarded(tool_name: str = None, breaker: CircuitBreaker = None, **breaker_kwargs):
     """Decorator: wraps any tool function with a CircuitBreaker.
 
-    The wrapped function may return either:
-      - a (success: bool, result) tuple, or
-      - a plain result (treated as always success=True).
+    Failure is detected two ways -- use whichever fits your code:
+      - the function raises an exception (re-raised normally until TRIP), or
+      - the function returns a (success: bool, result) tuple.
+    A plain, non-tuple return is treated as success=True.
 
     On WARN, prints the hint (swap `print` for your own logger/context-injector).
     On TRIP, raises GuardTripped -- catch it in your agent loop and stop.
@@ -157,15 +158,22 @@ def guarded(tool_name: str = None, breaker: CircuitBreaker = None, **breaker_kwa
 
         @functools.wraps(fn)
         def wrapper(*args, **kwargs):
-            result = fn(*args, **kwargs)
-            success, payload = (result if isinstance(result, tuple) and len(result) == 2
-                                 and isinstance(result[0], bool) else (True, result))
             call_args = {**{f"arg{i}": a for i, a in enumerate(args)}, **kwargs}
+            raised = None
+            try:
+                result = fn(*args, **kwargs)
+                success, payload = (result if isinstance(result, tuple) and len(result) == 2
+                                     and isinstance(result[0], bool) else (True, result))
+            except Exception as e:
+                success, payload, raised = False, None, e
+
             v = cb.check(name, call_args, success=success)
             if v.action == "WARN":
                 print(f"[agent_guard] WARN: {v.hint}")
             elif v.action == "TRIP":
-                raise GuardTripped(f"{v.reason} -- tool '{name}' stuck in a loop")
+                raise GuardTripped(f"{v.reason} -- tool '{name}' stuck in a loop") from raised
+            if raised is not None:
+                raise raised
             return payload
 
         wrapper.breaker = cb
