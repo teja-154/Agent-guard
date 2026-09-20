@@ -17,7 +17,7 @@ repeats — burning tokens on calls that all "succeed" individually.
 ## Install
 
 ```bash
-pip install git+https://github.com/YOUR_USERNAME/agent-guard.git
+pip install git+https://github.com/teja-154/Agent-guard.git
 ```
 
 or just copy `agent_guard.py` into your project — it's one file, stdlib only.
